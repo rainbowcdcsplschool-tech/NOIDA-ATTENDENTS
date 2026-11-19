@@ -63,17 +63,14 @@ var ST = {
 };
 var currentUser = null;
 
-// Restore saved session if available
 try {
   var savedUser = localStorage.getItem("attendance-session");
-  if(savedUser) {
-    currentUser = JSON.parse(savedUser);
-  }
+  if(savedUser) currentUser = JSON.parse(savedUser);
 } catch(e){}
 
 var GPS = null, tab = currentUser ? (currentUser.role === "admin" ? "today" : "myportal") : "today", date = today(), q = "", month = today().slice(0,7);
 var LBL = {P:"Present", L:"Late", A:"Absent", V:"Leave"};
-var syncMsg = "", syncing = false;
+var syncMsg = "", syncing = false, hasLocalEdits = false;
 
 function today(){
   var d = new Date();
@@ -104,17 +101,25 @@ function readCache(){
   }catch(e){}
 }
 
-// Downloads data from Google Sheets and merges it in. Accounts are merged, never replaced.
-function fetchServer(cb){
-  fetch(API_URL + "?t=" + Date.now())
+// Downloads data from Google Sheets and merges safely
+function fetchServer(cb, forceOverwrite){
+  fetch(API_URL + "?t=" + Date.now(), { redirect: "follow" })
     .then(function(r){ return r.json(); })
     .then(function(res){
       if(res && res.status === "success" && res.data && typeof res.data === "object"){
         var d = res.data;
-        ST.staff = d.staff || ST.staff;
-        ST.rec = d.rec || ST.rec;
-        ST.loc = d.loc || ST.loc;
-        ST.accounts = Object.assign({}, ST.accounts, d.accounts || {});
+        // Only apply server state if user hasn't made unsaved edits right now, or if explicitly forced
+        if(!hasLocalEdits || forceOverwrite){
+          if(Array.isArray(d.staff)) ST.staff = d.staff;
+          if(d.rec && typeof d.rec === "object") ST.rec = d.rec;
+          if(d.loc && typeof d.loc === "object") ST.loc = d.loc;
+          if(d.accounts && typeof d.accounts === "object"){
+            ST.accounts = Object.assign({
+              "admin": {pass: "admin123", role: "admin", name: "Administrator", staffId: null}
+            }, d.accounts);
+          }
+          try{ localStorage.setItem("attendance-v5", JSON.stringify(ST)); }catch(e){}
+        }
       }
       if(cb) cb(true);
     })
@@ -126,8 +131,13 @@ function fetchServer(cb){
 
 function load(){
   readCache();
-  finishLoading();                       // show the login screen immediately
-  fetchServer(function(){ refresh(); }); // late server replies are applied, not discarded
+  finishLoading();
+  syncMsg = "Syncing...";
+  refresh();
+  fetchServer(function(ok){
+    syncMsg = ok ? "Synced ✓" : "Offline mode";
+    refresh();
+  }, false);
 }
 
 function finishLoading(){
@@ -140,7 +150,6 @@ function finishLoading(){
   render();
 }
 
-// Re-render without wiping what the person typed on the login screen
 function refresh(){
   var uEl = document.getElementById("login-user"), pEl = document.getElementById("login-pass");
   var u = uEl ? uEl.value : "", p = pEl ? pEl.value : "";
@@ -157,28 +166,41 @@ function syncNow(){
   refresh();
   fetchServer(function(ok){
     syncing = false;
-    if(ok){
-      syncMsg = "Synced at " + currentTimeStr();
-      try{ localStorage.setItem("attendance-v5", JSON.stringify(ST)); }catch(e){}
-    } else {
-      syncMsg = "Sync failed. Check internet or script URL";
-    }
+    hasLocalEdits = false;
+    syncMsg = ok ? "Synced at " + currentTimeStr() : "Sync failed. Check Web App URL";
     refresh();
-  });
+  }, true);
 }
 
 function save(){
+  hasLocalEdits = true;
+  syncMsg = "Saving to sheet…";
   try {
     localStorage.setItem("attendance-v5", JSON.stringify(ST));
   }catch(e){}
 
+  // Use text/plain to prevent Google Apps Script redirect/CORS from stripping the POST body
   fetch(API_URL, {
     method: "POST",
-    mode: "no-cors",
-    headers: { "Content-Type": "application/json" },
+    redirect: "follow",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
     body: JSON.stringify(ST)
-  }).catch(function(err){
+  })
+  .then(function(r){ return r.text(); })
+  .then(function(txt){
+    hasLocalEdits = false;
+    try {
+      var res = JSON.parse(txt);
+      syncMsg = (res && res.status === "success") ? "Saved ✓ " + currentTimeStr() : "Save error: " + (res.message || "Unknown");
+    } catch(e) {
+      syncMsg = "Saved ✓ " + currentTimeStr();
+    }
+    refresh();
+  })
+  .catch(function(err){
     console.error("Sync error:", err);
+    syncMsg = "Saved locally (Offline)";
+    refresh();
   });
 }
 
@@ -217,7 +239,7 @@ function renderAuth(){
         <label class="mut">Password</label>
         <input type="password" id="login-pass" placeholder="Enter password" onkeydown="if(event.key==='Enter')doLogin()">
       </div>
-      <button class="pri" style="width:100%" onclick="doLogin()">Log In</button>
+      <button class="pri" id="login-btn" style="width:100%" onclick="doLogin()">Log In</button>
       <button class="sec" style="width:100%;margin-top:8px" onclick="syncNow()" ${syncing ? "disabled" : ""}>🔄 Sync accounts</button>
       <div class="mut" style="text-align:center;margin-top:6px">${esc(syncMsg)}</div>
     </div>
@@ -227,10 +249,11 @@ function renderAuth(){
 function doLogin(){
   var u = document.getElementById("login-user").value.trim().toLowerCase();
   var p = document.getElementById("login-pass").value.trim();
+  if(!u || !p){ alert("Please enter username and password."); return; }
 
   function attempt(){
     var key = Object.keys(ST.accounts).find(function(k){ return k.toLowerCase() === u; });
-    if(!key || String(ST.accounts[key].pass) !== p) return false;
+    if(!key || String(ST.accounts[key].pass).trim() !== p) return false;
     currentUser = Object.assign({username: key}, ST.accounts[key]);
     try{ localStorage.setItem("attendance-session", JSON.stringify(currentUser)); }catch(e){}
     tab = currentUser.role === "admin" ? "today" : "myportal";
@@ -240,17 +263,20 @@ function doLogin(){
 
   if(attempt()) return;
 
-  // Not found locally: pull the latest accounts from the server and retry
-  fetchServer(function(){
-    if(!attempt()) alert("Invalid username or password.");
-  });
+  // Always check the latest server data before failing login
+  var btn = document.getElementById("login-btn");
+  if(btn){ btn.disabled = true; btn.textContent = "Checking server..."; }
+  fetchServer(function(ok){
+    if(btn){ btn.disabled = false; btn.textContent = "Log In"; }
+    if(!attempt()){
+      alert(ok ? "Invalid username or password." : "Invalid login & could not reach server. Check your internet or Apps Script URL.");
+    }
+  }, true);
 }
 
 function logout(){
   currentUser = null;
-  try {
-    localStorage.removeItem("attendance-session");
-  } catch(e){}
+  try { localStorage.removeItem("attendance-session"); } catch(e){}
   render();
 }
 
@@ -396,7 +422,7 @@ function addStaffAndAccount(){
   ST.staff.push({id: staffId, name: n, role: r});
   ST.accounts[uname] = {pass: upass, role: "staff", name: n, staffId: staffId};
   save(); render();
-  alert("Staff member and account created successfully!");
+  alert("Staff member and account created! Saving to Google Sheet...");
 }
 
 function delStaff(id){
