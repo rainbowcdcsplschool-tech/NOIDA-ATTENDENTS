@@ -425,6 +425,25 @@ function addStaffAndAccount(){
   alert("Staff member and account created! Saving to Google Sheet...");
 }
 
+function changeAdminPass(){
+  var o = document.getElementById("cp-old").value.trim();
+  var n = document.getElementById("cp-new").value.trim();
+  var c = document.getElementById("cp-conf").value.trim();
+  var acc = ST.accounts[currentUser.username];
+
+  if(!o || !n || !c){ alert("Teeno fields bharo."); return; }
+  if(!acc || String(acc.pass).trim() !== o){ alert("Purana password galat hai."); return; }
+  if(n.length < 6){ alert("Naya password kam se kam 6 characters ka rakho."); return; }
+  if(n !== c){ alert("Naya password aur confirm password match nahi kar rahe."); return; }
+  if(n === o){ alert("Naya password purane se alag hona chahiye."); return; }
+
+  acc.pass = n;
+  currentUser.pass = n;
+  try{ localStorage.setItem("attendance-session", JSON.stringify(currentUser)); }catch(e){}
+  save(); render();
+  alert("Password badal gaya. Ab naye password se login karna.");
+}
+
 function delStaff(id){
   if(!confirm("Remove this staff member, their account, and attendance records?")) return;
   ST.staff = ST.staff.filter(function(p){ return p.id !== id; });
@@ -483,8 +502,14 @@ function vReport(){
   return h + '<div class="card tw"><table><tr><th>Name</th><th>Present</th><th>Late</th><th>Absent</th><th>Leave</th><th>Attendance</th></tr>'+rows+"</table></div>";
 }
 
+function passCard(){
+  return '<div class="card"><div class="name" style="margin-bottom:8px">🔑 Change Admin Password</div>'
+    + '<div class="row" style="margin-bottom:8px"><input class="grow" type="password" id="cp-old" placeholder="Purana password" autocomplete="current-password"></div>'
+    + '<div class="row"><input class="grow" type="password" id="cp-new" placeholder="Naya password" autocomplete="new-password"><input class="grow" type="password" id="cp-conf" placeholder="Naya password dobara" autocomplete="new-password"><button class="pri" onclick="changeAdminPass()">Update</button></div></div>';
+}
+
 function vStaff(){
-  var h = locSettings() + '<div class="card"><div class="name" style="margin-bottom:8px">Add Staff Member & Account</div><div class="row" style="margin-bottom:8px"><input class="grow" id="nn" placeholder="Full name"><input class="grow" id="nr" placeholder="Role (optional)"></div><div class="row"><input class="grow" id="nu" placeholder="Username"><input class="grow" type="password" id="np" placeholder="Password"><button class="pri" onclick="addStaffAndAccount()">Add Staff</button></div></div>';
+  var h = locSettings() + passCard() + '<div class="card"><div class="name" style="margin-bottom:8px">Add Staff Member & Account</div><div class="row" style="margin-bottom:8px"><input class="grow" id="nn" placeholder="Full name"><input class="grow" id="nr" placeholder="Role (optional)"></div><div class="row"><input class="grow" id="nu" placeholder="Username"><input class="grow" type="password" id="np" placeholder="Password"><button class="pri" onclick="addStaffAndAccount()">Add Staff</button></div></div>';
   if(!ST.staff.length) return h + '<div class="empty">Nobody added yet.</div>';
   return h + ST.staff.map(function(p){
     var uname = "", upass = "";
